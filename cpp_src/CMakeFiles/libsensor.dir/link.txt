@@ -1,0 +1,3 @@
+"C:\Program Files\CMake\bin\cmake.exe" -E rm -f CMakeFiles\libsensor.dir/objects.a
+C:\MinGW\bin\ar.exe qc CMakeFiles\libsensor.dir/objects.a @CMakeFiles\libsensor.dir\objects1.rsp
+C:\MinGW\bin\c++.exe  -m64 -shared -o liblibsensor.dll -Wl,--out-implib,liblibsensor.dll.a -Wl,--major-image-version,0,--minor-image-version,0 -Wl,--whole-archive CMakeFiles\libsensor.dir/objects.a -Wl,--no-whole-archive @CMakeFiles\libsensor.dir\linkLibs.rsp

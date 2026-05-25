@@ -1,0 +1,115 @@
+using System;
+using System.IO.Ports;
+using System.Runtime.InteropServices;
+
+class Program
+{
+    [DllImport("libsensor", CallingConvention = CallingConvention.Cdecl)]
+    public static extern bool initialize_sensor(byte activation_byte);
+
+    [DllImport("libsensor", CallingConvention = CallingConvention.Cdecl)]
+    public static extern float read_weight_kg(int raw_adc_value, float calibration_factor);
+
+    private static SerialPort? mySerialPort; 
+    private static float calibrationFactor = 21000.0f; 
+    private static long zeroOffset = 0; 
+    private static bool isFirstRead = true;
+
+    private static float smoothedWeightKg = 0.0f;
+
+    static void Main(string[] args)
+    {
+        Console.OutputEncoding = System.Text.Encoding.UTF8;
+        Console.WriteLine("=== 20KG REAL-WORLD SMART SCALE ===");
+        Console.WriteLine("Sensor is starting...");
+
+        byte startByte = 4;
+        if (initialize_sensor(startByte))
+        {
+            Console.WriteLine("Status: Sensor initialized successfully.");
+            
+            mySerialPort = new SerialPort("COM8", 9600, Parity.None, 8, StopBits.One);
+            
+            try
+            {
+                mySerialPort.Open();
+                Console.WriteLine("USB port is open. Please place the tare weight on the scale (Zeroing)...");
+
+                mySerialPort.DataReceived += DataReceivedHandler;
+
+                Console.WriteLine("Enter to stop...");
+                Console.ReadLine();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("\n❌ [ERROR] USB connection failed!");
+                Console.WriteLine("Reason: " + ex.Message);
+                Console.WriteLine("Please check your Arduino Nano connection and COM Port.");
+            }
+            finally
+            {
+                if (mySerialPort != null && mySerialPort.IsOpen)
+                {
+                    mySerialPort.Close();
+                }
+            }
+        }
+        else
+        {
+            Console.WriteLine("Error: Sensor activation failed.");
+        }
+    }
+
+   private static void DataReceivedHandler(object sender, SerialDataReceivedEventArgs e)
+{
+    SerialPort sp = (SerialPort)sender;
+    string? rawDataStr = sp.ReadLine();
+
+    if (!string.IsNullOrEmpty(rawDataStr))
+    {
+        rawDataStr = rawDataStr.Trim();
+        if (int.TryParse(rawDataStr, out int liveADCValue))
+        {
+            if (isFirstRead)
+            {
+                zeroOffset = liveADCValue;
+                isFirstRead = false;
+                Console.WriteLine("\nScale Ready! Place weight now...\n");
+                smoothedWeightKg = read_weight_kg(0, calibrationFactor);
+                return;
+            }
+
+            int cleanADCValue = liveADCValue - (int)zeroOffset;
+            float currentWeightKg = read_weight_kg(cleanADCValue, calibrationFactor);
+
+            // Calculate the absolute difference between the new read and the current display
+            float difference = Math.Abs(currentWeightKg - smoothedWeightKg);
+
+            // Dynamic Smoothing Factor Selection
+            float dynamicSmoothingFactor;
+            if (difference > 0.150f) 
+            {
+                // If weight changed by more than 150g, react instantly
+                dynamicSmoothingFactor = 1.0f; 
+            }
+            else if (difference > 0.030f)
+            {
+                // If intermediate change (between 30g and 150g), respond moderately fast
+                dynamicSmoothingFactor = 0.4f;
+            }
+            else 
+            {
+                // If it's just minor noise (under 30g), smooth it heavily to prevent wiggling
+                dynamicSmoothingFactor = 0.04f;
+            }
+
+            // Apply the dynamic filter
+            smoothedWeightKg = (dynamicSmoothingFactor * currentWeightKg) + ((1.0f - dynamicSmoothingFactor) * smoothedWeightKg);
+
+            float weightGrams = smoothedWeightKg * 1000.0f;
+
+            Console.Write($"\r[Raw ADC: {liveADCValue}] --> Weight: {smoothedWeightKg:F3} kg  ({weightGrams:F0} g)    ");
+        }
+    }
+}
+}

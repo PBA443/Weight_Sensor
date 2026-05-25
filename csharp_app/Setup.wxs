@@ -1,0 +1,47 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="3S Force Sensor Live Monitor" 
+           Manufacturer="3S Fabrications" 
+           Version="1.0.0" 
+           UpgradeCode="4ad82597-96a8-4bb9-bd4f-0ff7e231bc51" 
+           Scope="perMachine">
+    
+    <MediaTemplate EmbedCab="yes" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of this software is already installed." />
+
+    <Icon Id="AppIcon.ico" SourceFile="myicon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon.ico" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="3S_Force_Sensor" />
+    </StandardDirectory>
+    <StandardDirectory Id="DesktopFolder" />
+
+    <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
+      
+      <Component Id="MainExecutable" Guid="a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d">
+        <File Id="AppEXE" Source="bin\Release\net10.0-windows\win-x64\publish\csharp_app.exe" KeyPath="yes" />
+        
+        <Shortcut Id="DesktopShortcut" 
+                  Directory="DesktopFolder" 
+                  Name="3S Force Sensor Monitor" 
+                  Target="[#AppEXE]"
+                  Icon="AppIcon.ico"
+                  WorkingDirectory="INSTALLFOLDER" />
+      </Component>
+
+      <Component Id="SensorDLL" Guid="b2c3d4e5-f6a7-8b9c-0d1e-2f3a4b5c6d7e">
+        <File Id="AppDLL" Source="libsensor.dll" KeyPath="yes" />
+      </Component>
+
+      <Component Id="Cleanup" Guid="c3d4e5f6-a78b-9c0d-1e2f-3a4b5c6d7e8f">
+        <RemoveFolder Id="RemoveINSTALLFOLDER" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\3S_Fabrications\SensorApp" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+      
+    </ComponentGroup>
+
+    <Feature Id="MainFeature" Title="3S Sensor Monitor" Level="1">
+      <ComponentGroupRef Id="ProductComponents" />
+    </Feature>
+  </Package>
+</Wix>

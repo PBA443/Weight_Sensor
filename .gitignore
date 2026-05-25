@@ -1,0 +1,19 @@
+# Look for build artifacts
+bin/
+obj/
+
+# Look for publishing outputs
+publish/
+
+# IDE specific files
+.vs/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Operating System files
+Thumbs.db
+ehthumbs.db
+Desktop.ini

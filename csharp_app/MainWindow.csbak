@@ -1,0 +1,118 @@
+using System;
+using System.Drawing;
+using System.Windows.Forms;
+using System.Runtime.InteropServices;
+
+namespace csharp_app
+{
+    public class MainWindow : Form
+    {
+        // C++ DLL එක P/Invoke හරහා සම්බන්ධ කරගැනීම
+        [DllImport("libsensor", CallingConvention = CallingConvention.Cdecl)]
+        public static extern bool initialize_sensor(byte activation_byte);
+
+        [DllImport("libsensor", CallingConvention = CallingConvention.Cdecl)]
+        public static extern float read_weight_kg(int raw_adc_value);
+
+        private Label weightDisplay;
+        private Label statusDisplay;
+        private Timer timer;
+        private Random random;
+
+        [STAThread]
+        public static void Main()
+        {
+            Application.EnableVisualStyles();
+            Application.Run(new MainWindow());
+        }
+
+        public MainWindow()
+        {
+            // Window (Form) එකේ ප්‍රමාණය සහ පසුබිම සෙට් කිරීම
+            this.Text = "3S Force Sensor Live Monitor";
+            this.Size = new Size(500, 350);
+            this.BackColor = Color.FromArgb(30, 30, 30); // Dark Mode Background (#1E1E1E)
+            this.StartPosition = FormStartPosition.CenterScreen;
+            this.FormBorderStyle = FormBorderStyle.FixedSingle;
+            this.MaximizeBox = false;
+
+            random = new Random();
+
+            // උඩින්ම වැටෙන TITLE එක
+            Label titleLabel = new Label();
+            titleLabel.Text = "LIVE WEIGHT MONITOR";
+            titleLabel.ForeColor = Color.DarkGray;
+            titleLabel.Font = new Font("Segoe UI", 12, FontStyle.Bold);
+            titleLabel.Location = new Point(10, 20);
+            titleLabel.Size = new Size(465, 25);
+            titleLabel.TextAlign = ContentAlignment.MiddleCenter;
+            this.Controls.Add(titleLabel);
+
+            // මැද තියෙන ලස්සන Border කොටුව (Panel එකක්)
+            Panel centerPanel = new Panel();
+            centerPanel.Size = new Size(400, 150);
+            centerPanel.Location = new Point(42, 60);
+            centerPanel.BackColor = Color.FromArgb(45, 45, 45); // පැනල් එකේ බැග්‍රවුන්ඩ් එක
+            this.Controls.Add(centerPanel);
+
+            // ලොකුවට බර පෙන්වන තැන (WeightDisplay)
+            weightDisplay = new Label();
+            weightDisplay.Text = "0.00";
+            weightDisplay.ForeColor = Color.FromArgb(0, 255, 102); // Neon Green පාට
+            weightDisplay.Font = new Font("Consolas", 48, FontStyle.Bold);
+            weightDisplay.Size = new Size(400, 80);
+            weightDisplay.Location = new Point(0, 20);
+            weightDisplay.TextAlign = ContentAlignment.MiddleCenter;
+            centerPanel.Controls.Add(weightDisplay);
+
+            // KG කෑල්ල
+            Label unitLabel = new Label();
+            unitLabel.Text = "KG";
+            unitLabel.ForeColor = Color.DarkGray;
+            unitLabel.Font = new Font("Segoe UI", 14, FontStyle.Bold);
+            unitLabel.Size = new Size(400, 30);
+            unitLabel.Location = new Point(0, 100);
+            unitLabel.TextAlign = ContentAlignment.MiddleCenter;
+            centerPanel.Controls.Add(unitLabel);
+
+            // යටින්ම තියෙන Status එක
+            statusDisplay = new Label();
+            statusDisplay.Text = "Status: Initializing...";
+            statusDisplay.ForeColor = Color.Orange;
+            statusDisplay.Font = new Font("Segoe UI", 10, FontStyle.Regular);
+            statusDisplay.Location = new Point(20, 265);
+            statusDisplay.Size = new Size(440, 25);
+            this.Controls.Add(statusDisplay);
+
+            // සෙන්සර් එක ඔන් කිරීම (Activation byte = 4)
+            bool isReady = initialize_sensor(4);
+            if (isReady)
+            {
+                statusDisplay.Text = "Status: Sensor successfully initialized.";
+                statusDisplay.ForeColor = Color.LightGreen;
+
+                // මිලිසෙකන්ඩ් 200න් 200ට ලයිව් බර අප්ඩේට් කරන ටයිමර් එක
+                timer = new Timer();
+                timer.Interval = 200;
+                timer.Tick += UpdateWeightEvent;
+                timer.Start();
+            }
+            else
+            {
+                statusDisplay.Text = "Error: Sensor activation failed.";
+                statusDisplay.ForeColor = Color.Red;
+                weightDisplay.Text = "---";
+            }
+        }
+
+        private void UpdateWeightEvent(object sender, EventArgs e)
+        {
+            // ADC අගය 0-1023 අතර රෑන්ඩම් අරන් C++ DLL එකට යැවීම
+            int liveADCValue = random.Next(0, 1024);
+            float liveWeightKg = read_weight_kg(liveADCValue);
+            
+            // UI එකට බර දශමස්ථාන 2කට අප්ඩේට් කිරීම
+            weightDisplay.Text = liveWeightKg.ToString("F2");
+        }
+    }
+}

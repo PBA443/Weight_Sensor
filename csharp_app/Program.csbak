@@ -1,0 +1,39 @@
+﻿using System;
+using System.Runtime.InteropServices;
+
+class Program
+{
+  [DllImport("libsensor", CallingConvention = CallingConvention.Cdecl)]
+  public static extern bool initialize_sensor(byte activation_byte);
+
+  [DllImport("libsensor", CallingConvention = CallingConvention.Cdecl)]
+  public static extern float read_weight_kg(int raw_adc_value);
+
+  static void Main(string[] sender)
+  {
+    Console.WriteLine("Initializing sensor...");
+
+    byte startByte = 4;
+    bool isReady = initialize_sensor(startByte);
+
+    if (isReady)
+    {
+      Console.WriteLine("Status: Sensor successfully initialized.");
+      Console.WriteLine("Reading weight data from sensor...");
+
+      Random random = new Random();
+
+      while (true)
+      {
+        int liveADCValue = random.Next(0, 1024);
+        float liveWeightKg = read_weight_kg(liveADCValue);
+        Console.Write($"\r[Live ADC: {liveADCValue}] Weight: {liveWeightKg:F2} kg   ");
+        System.Threading.Thread.Sleep(200);
+      }
+    }
+    else
+    {
+      Console.WriteLine("Error: Sensor activation failed. Incorrect activation byte or hardware issue.");
+    }
+  }
+}
