@@ -1,5 +1,6 @@
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
-  <Package Name="3S Force Sensor Live Monitor" 
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util"> <Package Name="3S Force Sensor Live Monitor" 
            Manufacturer="3S Fabrications" 
            Version="1.0.0" 
            UpgradeCode="4ad82597-96a8-4bb9-bd4f-0ff7e231bc51" 
@@ -18,19 +19,24 @@
 
     <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
       
-      <Component Id="MainExecutable" Guid="a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d">
-        <File Id="AppEXE" Source="bin\Release\net10.0-windows\win-x64\publish\csharp_app.exe" KeyPath="yes" />
-        
+      <Files Include="bin\Release\net10.0-windows\win-x64\publish\*" />
+
+      <Component Id="AppShortcutComponent" Guid="e5f6a1b2-c3d4-7a8b-9c0d-1e2f3a4b5c6d">
         <Shortcut Id="DesktopShortcut" 
                   Directory="DesktopFolder" 
                   Name="3S Force Sensor Monitor" 
-                  Target="[#AppEXE]"
+                  Target="[INSTALLFOLDER]csharp_app.exe"
                   Icon="AppIcon.ico"
                   WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKCU" Key="Software\3S_Fabrications\SensorApp\Shortcut" Name="installed" Type="integer" Value="1" KeyPath="yes" />
       </Component>
 
       <Component Id="SensorDLL" Guid="b2c3d4e5-f6a7-8b9c-0d1e-2f3a4b5c6d7e">
         <File Id="AppDLL" Source="libsensor.dll" KeyPath="yes" />
+      </Component>
+
+      <Component Id="DriverInstallerComponent" Guid="a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6e">
+        <File Id="DriverExe" Source="CH341SER.EXE" KeyPath="yes" />
       </Component>
 
       <Component Id="Cleanup" Guid="c3d4e5f6-a78b-9c0d-1e2f-3a4b5c6d7e8f">
@@ -39,6 +45,19 @@
       </Component>
       
     </ComponentGroup>
+
+    <Property Id="CH340InstallCmd" Value="&quot;[INSTALLFOLDER]CH341SER.EXE&quot; /S" />
+    
+    <CustomAction Id="InstallCH340Driver" 
+                  Directory="INSTALLFOLDER" 
+                  ExeCommand="cmd.exe /c start /wait CH341SER.EXE /S" 
+                  Execute="deferred" 
+                  Impersonate="no" 
+                  Return="check" />
+
+    <InstallExecuteSequence>
+      <Custom Action="InstallCH340Driver" Before="InstallFinalize" Condition="NOT Installed" />
+    </InstallExecuteSequence>
 
     <Feature Id="MainFeature" Title="3S Sensor Monitor" Level="1">
       <ComponentGroupRef Id="ProductComponents" />

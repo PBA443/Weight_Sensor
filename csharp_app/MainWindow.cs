@@ -29,7 +29,12 @@ namespace csharp_app
         private long zeroOffset = 0;
         private bool isFirstRead = true;
         private float smoothedWeightKg = 0.0f;
-        private string portName = "COM8";
+        
+        // 🔥 Hardcoded "COM8" වෙනුවට Auto අල්ලගන්න පෝට් එක දාන්න Variable එකක්
+        private string detectedPortName = ""; 
+
+        // ඩේටා පැකට් එක එකවර කියවීමට බෆර් එක
+        private readonly byte[] rawBuffer = new byte[4];
 
         [STAThread]
         public static void Main()
@@ -76,7 +81,7 @@ namespace csharp_app
 
             weightDisplay = new Label
             {
-                Text = "0",
+                Text = "---",
                 ForeColor = Color.FromArgb(240, 244, 255),
                 Font = new Font("Consolas", 44, FontStyle.Bold),
                 Size = new Size(384, 80),
@@ -117,7 +122,7 @@ namespace csharp_app
 
             rawAdcDisplay = new Label
             {
-                Text = "0000",
+                Text = "----",
                 ForeColor = Color.FromArgb(240, 244, 255),
                 Font = new Font("Consolas", 11, FontStyle.Bold),
                 Location = new Point(165, 15),
@@ -137,33 +142,46 @@ namespace csharp_app
             };
             this.Controls.Add(statusDisplay);
 
+            // Reconnect Timer එක (තත්පර 2න් 2කට පෝට් ස්කෑන් කරන්න සකස් කලා)
             reconnectTimer = new System.Windows.Forms.Timer();
-            reconnectTimer.Interval = 1000;
+            reconnectTimer.Interval = 2000;
             reconnectTimer.Tick += AttemptReconnectEvent;
 
             FormClosing += MainWindow_FormClosing;
 
+            // මුලින්ම කනෙක්ෂන් එක පටන් ගන්නවා
             InitializeHardwareConnection();
         }
 
         private void InitializeHardwareConnection()
         {
-            statusDisplay.Text = "STATUS: CONNECTING...";
+            statusDisplay.Text = "STATUS: SCANNING PORTS...";
             statusDisplay.ForeColor = Color.FromArgb(255, 171, 0);
+            reconnectTimer.Stop();
 
             Task.Run(() =>
             {
                 try
                 {
+                    // 1. DLL Check
                     bool isReady = initialize_sensor(4);
                     if (!isReady)
                     {
-                        this.Invoke(new Action(() =>
-                            HandleDisconnectState("STATUS: HARDWARE ERROR")));
+                        this.Invoke(new Action(() => HandleDisconnectState("STATUS: DLL HARDWARE ERROR")));
                         return;
                     }
 
-                    var port = new SerialPort(portName, 9600, Parity.None, 8, StopBits.One);
+                    // 2. 🔥 Console එකේ වගේම ඔටෝමැටිකව පෝට් එක හොයනවා
+                    detectedPortName = AutoFindScalePort();
+
+                    if (string.IsNullOrEmpty(detectedPortName))
+                    {
+                        this.Invoke(new Action(() => HandleDisconnectState("STATUS: SCALE NOT FOUND. RETRYING...")));
+                        return;
+                    }
+
+                    // 3. පෝට් එක Open කිරීම
+                    var port = new SerialPort(detectedPortName, 9600, Parity.None, 8, StopBits.One);
                     port.Open();
 
                     mySerialPort = port;
@@ -171,9 +189,8 @@ namespace csharp_app
 
                     this.Invoke(new Action(() =>
                     {
-                        statusDisplay.Text = "STATUS: ZEROING SCALE (TARE)...";
+                        statusDisplay.Text = $"STATUS: CONNECTED ON {detectedPortName} (TARE)...";
                         statusDisplay.ForeColor = Color.FromArgb(255, 171, 0);
-                        reconnectTimer.Stop();
                     }));
 
                     cts = new CancellationTokenSource();
@@ -181,47 +198,68 @@ namespace csharp_app
                 }
                 catch
                 {
-                    this.Invoke(new Action(() =>
-                        HandleDisconnectState("DISCONNECTED: CHECK CABLE")));
+                    this.Invoke(new Action(() => HandleDisconnectState("DISCONNECTED: CHECK CABLE")));
                 }
             });
         }
 
+        // 🕵️‍♂️ පෝට් එක ඔටෝමැටිකව ස්කෑන් කරන ලොජික් එක
+        private string AutoFindScalePort()
+        {
+            string[] ports = SerialPort.GetPortNames();
+            foreach (string port in ports)
+            {
+                try
+                {
+                    using (SerialPort testPort = new SerialPort(port, 9600, Parity.None, 8, StopBits.One))
+                    {
+                        testPort.ReadTimeout = 300;
+                        testPort.Open();
+                        
+                        for (int i = 0; i < 15; i++)
+                        {
+                            if (testPort.BytesToRead > 0 && testPort.ReadByte() == 0xAA)
+                            {
+                                testPort.Close();
+                                return port; 
+                            }
+                            Thread.Sleep(20);
+                        }
+                        testPort.Close();
+                    }
+                }
+                catch { }
+            }
+            return string.Empty;
+        }
+
+        // 📥 High-Speed බයිට් ස්ට්‍රීම් එක බැක්ග්‍රවුන්ඩ් එකේ කියවන Task එක
         private async Task StreamDataTask(CancellationToken token)
         {
-            StringBuilder lineBuffer = new StringBuilder();
-
             while (!token.IsCancellationRequested)
             {
                 try
                 {
                     if (mySerialPort == null || !mySerialPort.IsOpen)
-                        throw new Exception("Port disconnected");
+                        throw new Exception("Port closed");
 
-                    if (mySerialPort.BytesToRead > 0)
+                    // 🔥 TEXT වෙනුවට බයිට් 6ක පැකට් එක කෙළින්ම චෙක් කරනවා
+                    if (mySerialPort.BytesToRead >= 6)
                     {
-                        char c = (char)mySerialPort.ReadChar();
+                        byte header = (byte)mySerialPort.ReadByte();
+                        if (header != 0xAA) continue;
 
-                        if (c == '\n')
+                        mySerialPort.Read(rawBuffer, 0, 4);
+                        byte receivedChecksum = (byte)mySerialPort.ReadByte();
+                        byte calculatedChecksum = (byte)(rawBuffer[0] + rawBuffer[1] + rawBuffer[2] + rawBuffer[3]);
+
+                        if (calculatedChecksum == receivedChecksum)
                         {
-                            string line = lineBuffer.ToString().Replace("\r", "").Trim();
-                            lineBuffer.Clear();
+                            // Bit stitching
+                            int liveADCValue = (rawBuffer[0] << 24) | (rawBuffer[1] << 16) | (rawBuffer[2] << 8) | rawBuffer[3];
 
-                            if (line.Length > 0)
-                            {
-                                this.Invoke(new Action(() =>
-                                    rawAdcDisplay.Text = $"RAW: {line}"));
-
-                                if (int.TryParse(line, out int liveADCValue))
-                                {
-                                    this.Invoke(new Action(() =>
-                                        ProcessIncomingMetrics(liveADCValue)));
-                                }
-                            }
-                        }
-                        else
-                        {
-                            lineBuffer.Append(c);
+                            // UI එක ආරක්ෂිතව අප්ඩේට් කරන්න Invoke පාවිච්චි කරනවා
+                            this.BeginInvoke(new Action(() => ProcessIncomingMetrics(liveADCValue)));
                         }
                     }
                 }
@@ -231,8 +269,7 @@ namespace csharp_app
                 }
                 catch
                 {
-                    this.Invoke(new Action(() =>
-                        HandleDisconnectState("CONNECTION LOST: RECONNECTING...")));
+                    this.Invoke(new Action(() => HandleDisconnectState("CONNECTION LOST: RECONNECTING...")));
                     break;
                 }
 
@@ -242,18 +279,14 @@ namespace csharp_app
 
         private void ProcessIncomingMetrics(int liveADCValue)
         {
-            if (liveADCValue == 0) return;
-
             if (isFirstRead)
             {
                 zeroOffset = liveADCValue;
                 isFirstRead = false;
                 smoothedWeightKg = 0.0f;
 
-                statusDisplay.Text = "STATUS: OPERATIONAL";
+                statusDisplay.Text = $"STATUS: OPERATIONAL ({detectedPortName})";
                 statusDisplay.ForeColor = Color.FromArgb(0, 230, 118);
-                rawAdcDisplay.Text = $"{liveADCValue} ticks";
-                weightDisplay.Text = smoothedWeightKg.ToString("F3");
                 return;
             }
 
@@ -263,15 +296,16 @@ namespace csharp_app
             if (currentWeightKg < 0 || float.IsNaN(currentWeightKg))
                 currentWeightKg = 0.0f;
 
+            // Dynamic Smoothing Filter
             float difference = Math.Abs(currentWeightKg - smoothedWeightKg);
             float dynamicSmoothingFactor = difference > 0.150f ? 1.0f
                                          : difference > 0.030f ? 0.4f
                                          : 0.04f;
 
-            smoothedWeightKg = (dynamicSmoothingFactor * currentWeightKg)
-                             + ((1.0f - dynamicSmoothingFactor) * smoothedWeightKg);
+            smoothedWeightKg = (dynamicSmoothingFactor * currentWeightKg) + ((1.0f - dynamicSmoothingFactor) * smoothedWeightKg);
 
-            rawAdcDisplay.Text = $"{liveADCValue} ticks";
+            // ලස්සනට UI එක අප්ඩේට් කිරීම
+            rawAdcDisplay.Text = $"0x{liveADCValue:X8} ({liveADCValue} ticks)";
             weightDisplay.Text = smoothedWeightKg.ToString("F3");
         }
 
@@ -304,12 +338,7 @@ namespace csharp_app
         {
             if (mySerialPort == null)
             {
-                string[] activePorts = SerialPort.GetPortNames();
-                if (Array.Exists(activePorts, p =>
-                    p.Equals(portName, StringComparison.OrdinalIgnoreCase)))
-                {
-                    InitializeHardwareConnection();
-                }
+                InitializeHardwareConnection();
             }
         }
 
