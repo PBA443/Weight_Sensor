@@ -11,51 +11,64 @@ class Program
     [DllImport("libsensor", CallingConvention = CallingConvention.Cdecl)]
     public static extern float read_weight_kg(int raw_adc_value, float calibration_factor);
 
-    private static SerialPort? mySerialPort; 
-    private static float calibrationFactor = 21000.0f; 
-    private static long zeroOffset = 0; 
+    private static SerialPort? mySerialPort;
+
+    private static float calibrationFactor = 21000.0f;
+    private static int zeroOffset = 0;
     private static bool isFirstRead = true;
-    private static float smoothedWeightKg = 0.0f;
-    
-    private static readonly object streamLock = new object();
-    private static readonly byte[] rawBuffer = new byte[4]; 
     private static bool isRunning = true;
+    private static float smoothedWeightKg = 0.0f;
 
     static void Main(string[] args)
     {
         Console.OutputEncoding = System.Text.Encoding.UTF8;
-        Console.WriteLine("=============================================");
-        Console.WriteLine("   SMART SCALE - AUTO-DETECT & RECONNECT     ");
-        Console.WriteLine("=============================================");
-        
-        // DLL Activation
-        if (!initialize_sensor(0x04))
+
+        Console.WriteLine("Starting Scale Reader...");
+
+        try
         {
-            Console.WriteLine("❌ [Error] Sensor activation hardware check failed.");
+            if (!initialize_sensor(0x04))
+            {
+                Console.WriteLine("DLL initialization failed.");
+                return;
+            }
+
+            Console.WriteLine("DLL initialized successfully.");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"DLL Error: {ex}");
             return;
         }
-        Console.WriteLine("✔ [Status] Sensor DLL verified successfully.");
 
         while (isRunning)
         {
+            Console.WriteLine("\nSearching COM ports...");
+
             string targetPort = AutoFindScalePort();
 
             if (string.IsNullOrEmpty(targetPort))
             {
-                Console.Write("\r🔍 [System] Scale not found. Retrying in 2 seconds...   ");
+                Console.WriteLine("No scale detected. Retrying...");
                 Thread.Sleep(2000);
                 continue;
             }
 
-            Console.WriteLine($"\n⚡ [System] Found Scale on {targetPort}! Connecting...");
-            
-            mySerialPort = new SerialPort(targetPort, 9600, Parity.None, 8, StopBits.One);
-            
+            Console.WriteLine($"Scale found on {targetPort}");
+
             try
             {
+                mySerialPort = new SerialPort(
+                    targetPort,
+                    9600,
+                    Parity.None,
+                    8,
+                    StopBits.One);
+
+                mySerialPort.ReadTimeout = 1000;
                 mySerialPort.Open();
-                Console.WriteLine($"✔ [{targetPort}] Connected successfully!");
-                Console.WriteLine("👉 Leave the scale empty for auto-zero (Tare)...");
+                mySerialPort.DiscardInBuffer();
+                Console.WriteLine($"Connected to {targetPort}");
 
                 mySerialPort.DataReceived += DataReceivedHandler;
 
@@ -66,110 +79,169 @@ class Program
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"\n❌ [Hardware Error] Connection lost: {ex.Message}");
+                Console.WriteLine($"Port Error: {ex.Message}");
             }
             finally
             {
                 CleanupPort();
                 isFirstRead = true;
-                Console.WriteLine("\n🔄 [System] Attempting to reconnect...");
-                Thread.Sleep(2000);
+                Console.WriteLine("Disconnected.");
             }
+        }
+    }
+
+    private static void DataReceivedHandler(
+        object sender,
+        SerialDataReceivedEventArgs e)
+    {
+        try
+        {
+            SerialPort sp = (SerialPort)sender;
+
+            while (sp.BytesToRead >= 6)
+            {
+                int header = sp.ReadByte();
+
+                if (header != 0xAA)
+                {
+                    continue;
+                }
+
+                byte[] buffer = new byte[5];
+
+                int totalRead = 0;
+
+                while (totalRead < buffer.Length)
+                {
+                    int n = sp.Read(
+                        buffer,
+                        totalRead,
+                        buffer.Length - totalRead);
+
+                    if (n <= 0)
+                        return;
+
+                    totalRead += n;
+                }
+
+                int liveADCValue =
+                    BitConverter.ToInt32(buffer, 0);
+
+                byte receivedChecksum = buffer[4];
+
+                byte calculatedChecksum =
+                    (byte)(
+                        buffer[0] +
+                        buffer[1] +
+                        buffer[2] +
+                        buffer[3]);
+
+                if (calculatedChecksum != receivedChecksum)
+                {
+                    Console.WriteLine(
+                        $"\nChecksum Error " +
+                        $"RX={receivedChecksum:X2} " +
+                        $"CALC={calculatedChecksum:X2}");
+
+                    continue;
+                }
+
+                if (isFirstRead)
+                {
+                    zeroOffset = liveADCValue;
+                    isFirstRead = false;
+
+                    Console.WriteLine(
+                        $"\nZero Offset Set = {zeroOffset}");
+                }
+
+                Console.Write(
+                    $"\rADC={liveADCValue}  ");
+
+                try
+                {
+                    float currentWeightKg = read_weight_kg(liveADCValue - zeroOffset, calibrationFactor);
+
+                    // 1. Dead-zone & NaN filtering
+                    if (currentWeightKg < 0.005f || float.IsNaN(currentWeightKg))
+                        currentWeightKg = 0.0f;
+
+                    // 2. Dynamic Smoothing Filter
+                    float diff = Math.Abs(currentWeightKg - smoothedWeightKg);
+
+                    float alpha = diff > 0.150f ? 1.0f 
+                                : diff > 0.020f ? 0.2f 
+                                : 0.01f;
+
+                    smoothedWeightKg = (alpha * currentWeightKg) + ((1.0f - alpha) * smoothedWeightKg);
+
+                    // 3. UI update
+                    Console.Write($"\rWeight={smoothedWeightKg:F3} kg     ");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine(
+                        $"\nWeight Calculation Error: {ex}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine(
+                $"\nData Receive Error: {ex}");
         }
     }
 
     private static string AutoFindScalePort()
     {
-        string[] ports = SerialPort.GetPortNames();
-        
-        foreach (string port in ports)
-        {
-            try 
-            {
-                using (SerialPort testPort = new SerialPort(port, 9600, Parity.None, 8, StopBits.One))
-                {
-                    testPort.ReadTimeout = 500;
-                    testPort.Open();
-                    
-                    int bytesToScan = 20; 
-                    for (int i = 0; i < bytesToScan; i++)
-                    {
-                        if (testPort.BytesToRead > 0)
-                        {
-                            if (testPort.ReadByte() == 0xAA)
-                            {
-                                testPort.Close();
-                                return port;
-                            }
-                        }
-                        Thread.Sleep(20);
-                    }
-                    testPort.Close();
-                }
-            }
-            catch { /* dismiss any port that can't be opened or read from */ }
-        }
-        return string.Empty;
-    }
-
-    private static void DataReceivedHandler(object sender, SerialDataReceivedEventArgs e)
-    {
-        SerialPort sp = (SerialPort)sender;
-        if (!sp.IsOpen) return;
-
-        lock (streamLock)
+        foreach (string port in SerialPort.GetPortNames())
         {
             try
             {
-                while (sp.BytesToRead >= 6)
+                Console.WriteLine($"Checking {port}...");
+
+                using (SerialPort tp =
+                    new SerialPort(port, 9600))
                 {
-                    byte header = (byte)sp.ReadByte();
-                    if (header != 0xAA) continue; 
+                    tp.ReadTimeout = 500;
+                    tp.Open();
 
-                    sp.Read(rawBuffer, 0, 4);
-                    byte receivedChecksum = (byte)sp.ReadByte();
-                    byte calculatedChecksum = (byte)(rawBuffer[0] + rawBuffer[1] + rawBuffer[2] + rawBuffer[3]);
-                    
-                    if (calculatedChecksum == receivedChecksum)
+                    int firstByte = tp.ReadByte();
+
+                    Console.WriteLine(
+                        $"{port} First Byte = 0x{firstByte:X2}");
+
+                    if (firstByte == 0xAA)
                     {
-                        int liveADCValue = (rawBuffer[0] << 24) | (rawBuffer[1] << 16) | (rawBuffer[2] << 8) | rawBuffer[3];
-
-                        if (isFirstRead)
-                        {
-                            zeroOffset = liveADCValue;
-                            isFirstRead = false;
-                            Console.WriteLine("\n⭐ Scale Tarred and Ready! Place load now...\n");
-                        }
-
-                        int cleanADCValue = liveADCValue - (int)zeroOffset;
-                        float currentWeightKg = read_weight_kg(cleanADCValue, calibrationFactor);
-
-                        float difference = Math.Abs(currentWeightKg - smoothedWeightKg);
-                        float dynamicSmoothingFactor = difference > 0.150f ? 1.0f : (difference > 0.030f ? 0.4f : 0.04f);
-
-                        smoothedWeightKg = (dynamicSmoothingFactor * currentWeightKg) + ((1.0f - dynamicSmoothingFactor) * smoothedWeightKg);
-                        float weightGrams = smoothedWeightKg * 1000.0f;
-
-                        Console.Write($"\r[COM Port Active] --> Weight: {smoothedWeightKg:F3} kg  ({weightGrams:F0} g)       ");
+                        return port;
                     }
                 }
             }
-            catch { /* dismiss any port that can't be opened or read from */ }
+            catch
+            {
+            }
         }
+
+        return string.Empty;
     }
 
     private static void CleanupPort()
     {
-        if (mySerialPort != null)
+        try
         {
-            try
+            if (mySerialPort != null)
             {
-                mySerialPort.DataReceived -= DataReceivedHandler;
-                if (mySerialPort.IsOpen) mySerialPort.Close();
+                if (mySerialPort.IsOpen)
+                {
+                    mySerialPort.Close();
+                }
+
                 mySerialPort.Dispose();
+                mySerialPort = null;
             }
-            catch { }
-            mySerialPort = null;
+        }
+        catch
+        {
         }
     }
 }

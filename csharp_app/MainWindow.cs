@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Text;
+using System.Net;
 
 namespace csharp_app
 {
@@ -17,9 +18,14 @@ namespace csharp_app
         [DllImport("libsensor", CallingConvention = CallingConvention.Cdecl)]
         public static extern float read_weight_kg(int raw_adc_value, float calibration_factor);
 
-        private Label weightDisplay;
-        private Label statusDisplay;
-        private Label rawAdcDisplay;
+        [StructLayout(LayoutKind.Sequential, Pack = 1)]
+        public struct ScalePacket
+        {
+            public byte Header;      // 0xAA
+            public int RawWeight;    // 4 bytes
+            public byte Checksum;    // 1 byte
+        }
+        private Label weightDisplay, statusDisplay, rawAdcDisplay;
 
         private SerialPort? mySerialPort;
         private System.Windows.Forms.Timer reconnectTimer;
@@ -143,8 +149,7 @@ namespace csharp_app
             this.Controls.Add(statusDisplay);
 
             // Reconnect Timer එක (තත්පර 2න් 2කට පෝට් ස්කෑන් කරන්න සකස් කලා)
-            reconnectTimer = new System.Windows.Forms.Timer();
-            reconnectTimer.Interval = 2000;
+            reconnectTimer = new System.Windows.Forms.Timer { Interval = 2000 };
             reconnectTimer.Tick += AttemptReconnectEvent;
 
             FormClosing += MainWindow_FormClosing;
@@ -233,47 +238,30 @@ namespace csharp_app
             return string.Empty;
         }
 
-        // 📥 High-Speed බයිට් ස්ට්‍රීම් එක බැක්ග්‍රවුන්ඩ් එකේ කියවන Task එක
         private async Task StreamDataTask(CancellationToken token)
         {
-            while (!token.IsCancellationRequested)
+            while (!token.IsCancellationRequested && mySerialPort?.IsOpen == true)
             {
                 try
                 {
-                    if (mySerialPort == null || !mySerialPort.IsOpen)
-                        throw new Exception("Port closed");
-
-                    // 🔥 TEXT වෙනුවට බයිට් 6ක පැකට් එක කෙළින්ම චෙක් කරනවා
                     if (mySerialPort.BytesToRead >= 6)
                     {
-                        byte header = (byte)mySerialPort.ReadByte();
-                        if (header != 0xAA) continue;
+                        byte[] buffer = new byte[6];
+                        mySerialPort.Read(buffer, 0, 6);
 
-                        mySerialPort.Read(rawBuffer, 0, 4);
-                        byte receivedChecksum = (byte)mySerialPort.ReadByte();
-                        byte calculatedChecksum = (byte)(rawBuffer[0] + rawBuffer[1] + rawBuffer[2] + rawBuffer[3]);
-
-                        if (calculatedChecksum == receivedChecksum)
+                        if (buffer[0] == 0xAA)
                         {
-                            // Bit stitching
-                            int liveADCValue = (rawBuffer[0] << 24) | (rawBuffer[1] << 16) | (rawBuffer[2] << 8) | rawBuffer[3];
+                            GCHandle handle = GCHandle.Alloc(buffer, GCHandleType.Pinned);
+                            ScalePacket packet = (ScalePacket)Marshal.PtrToStructure(handle.AddrOfPinnedObject(), typeof(ScalePacket))!;
+                            handle.Free();
 
-                            // UI එක ආරක්ෂිතව අප්ඩේට් කරන්න Invoke පාවිච්චි කරනවා
-                            this.BeginInvoke(new Action(() => ProcessIncomingMetrics(liveADCValue)));
+                            int weight = IPAddress.NetworkToHostOrder(packet.RawWeight); // Big-endian to host order
+                            this.BeginInvoke(new Action(() => ProcessIncomingMetrics(weight)));
                         }
                     }
                 }
-                catch (OperationCanceledException)
-                {
-                    break;
-                }
-                catch
-                {
-                    this.Invoke(new Action(() => HandleDisconnectState("CONNECTION LOST: RECONNECTING...")));
-                    break;
-                }
-
-                await Task.Delay(5, token);
+                catch { break; }
+                await Task.Delay(10, token);
             }
         }
 
@@ -293,14 +281,14 @@ namespace csharp_app
             int cleanADCValue = liveADCValue - (int)zeroOffset;
             float currentWeightKg = read_weight_kg(cleanADCValue, calibrationFactor);
 
-            if (currentWeightKg < 0 || float.IsNaN(currentWeightKg))
+            if (currentWeightKg < 0.005f || float.IsNaN(currentWeightKg))
                 currentWeightKg = 0.0f;
 
             // Dynamic Smoothing Filter
             float difference = Math.Abs(currentWeightKg - smoothedWeightKg);
             float dynamicSmoothingFactor = difference > 0.150f ? 1.0f
-                                         : difference > 0.030f ? 0.4f
-                                         : 0.04f;
+                                         : difference > 0.020f ? 0.2f
+                                         : 0.01f;
 
             smoothedWeightKg = (dynamicSmoothingFactor * currentWeightKg) + ((1.0f - dynamicSmoothingFactor) * smoothedWeightKg);
 
